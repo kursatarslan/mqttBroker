@@ -1,0 +1,29 @@
+﻿{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5432;Database=mqtt;Username=postgres;Password=postgres;Maximum Pool Size=90;Connection Idle Lifetime=120;Connection Pruning Interval=30;"
+  },
+  "Serilog": {
+    "Enrich": [ "FromLogContext", "WithMachineName", "WithThreadId" ],
+    "MinimumLevel": "Error",
+    "Properties": {
+      "Application": "MqttBroker",
+      "Logging": {
+        "LogLevel": {
+          "Default": "Warning"
+        }
+      },
+      "AllowedHosts": "*"
+    },
+    "Using": [ "Serilog.Sinks.Console" ],
+    "WriteTo": [
+      { "Name": "Console" },
+      {
+        "Name": "RollingFile",
+        "Args": {
+          "pathFormat": "logsapi\\log-{Date}.txt",
+          "outputTemplate": "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level}] {Message}{NewLine}{Exception}"
+        }
+      }
+    ]
+  }
+}
