@@ -37,7 +37,7 @@ namespace MqttBroker
             {
                 entity.HasKey(e => e.Id);
                 entity.Property(e => e.ClientId).HasColumnName("ClientId");
-                entity.Property(e => e.VechicleId).HasColumnName("VechicleId");
+                entity.Property(e => e.Topic).HasColumnName("Topic");
             });
 
             OnModelCreatingPartial(modelBuilder);

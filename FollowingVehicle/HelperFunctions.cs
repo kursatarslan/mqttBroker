@@ -1,8 +1,9 @@
-﻿using System;
+
+using System;
 using System.Collections;
 using System.Text;
 
-namespace LeadVehicle
+namespace FollowingVehicle
 {
     public static class HelperFunctions
     {
@@ -32,6 +33,19 @@ namespace LeadVehicle
         public static string Base64Encode(string plainText)
         {
             return Convert.ToBase64String(Encoding.UTF8.GetBytes(plainText));
+        }
+
+        public static string ToBitString(BitArray bits, int indexStart, int indexFinish)
+        {
+            var sb = new StringBuilder();
+
+            for (var i = indexStart; i < indexFinish; i++)
+            {
+                var c = bits[i] ? '1' : '0';
+                sb.Append(c);
+            }
+
+            return sb.ToString();
         }
 
         public static byte[] GetPayload(Payload payload)
@@ -73,18 +87,6 @@ namespace LeadVehicle
             payload.RealPayload = Encoding.ASCII.GetString(serverPayload);
 
             return payload;
-        }
-        public static string ToBitString(BitArray bits, int indexStart, int indexFinish)
-        {
-            var sb = new StringBuilder();
-
-            for (var i = indexStart; i < indexFinish; i++)
-            {
-                var c = bits[i] ? '1' : '0';
-                sb.Append(c);
-            }
-
-            return sb.ToString();
         }
         public static byte[] BitArrayToByteArray(BitArray bits)
         {

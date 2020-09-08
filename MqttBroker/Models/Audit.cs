@@ -7,7 +7,7 @@ namespace MqttBroker.Models
         public int Id { get; set; }
         public string Type { get; set; }
         public string ClientId { get; set; }
-        public string VechicleId { get; set; }
+        public string Topic { get; set; }
         public DateTime CreationDate { get; set; } = DateTime.Now;
         public string Payload { get; set; }
     }

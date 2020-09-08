@@ -113,27 +113,37 @@ namespace MqttBroker
                 Console.WriteLine(ex.Message);
                 throw;
             }
-            
+            _server.StartedHandler = new MqttServerStartedHandlerDelegate(e =>
+            {
+                Console.WriteLine("Mqtt Broker start");
+            });
+            _server.StoppedHandler = new MqttServerStoppedHandlerDelegate(e =>
+            {
+                Console.WriteLine("Mqtt Broker stop");
+            });
             _server.ClientSubscribedTopicHandler = new MqttServerClientSubscribedHandlerDelegate(e =>
             {
                 var vehicleId = e.TopicFilter.Topic
                     .Replace("platooning/", "").Replace("/#", "");
 
-                Console.WriteLine("Client subscribed " + e.ClientId);
-                Console.WriteLine("Client topic " + e.TopicFilter.Topic);
-                Console.WriteLine("Vehicle Id " + vehicleId);
+                Console.WriteLine("Client subscribed " + e.ClientId + " topic " + e.TopicFilter.Topic + "Vehicle Id " +
+                                  vehicleId);
                 using var context = new MqttBrokerDbContext();
                 try
                 {
-                    
-                    var newPlatoon = new Audit
+                    var audit = new Audit
                     {
                         ClientId = e.ClientId,
                         Type = "Sub",
-                        VechicleId = vehicleId,
+                        Topic = e.TopicFilter.Topic,
                         Payload = JsonConvert.SerializeObject(e.TopicFilter, Formatting.Indented)
                     };
-                    context.Audit.AddAsync(newPlatoon);
+                    context.Audit.AddAsync(audit);
+                    var subs = context.Subscribe.AsQueryable()
+                        .FirstOrDefault(s => s.Topic == e.TopicFilter.Topic
+                                             && s.ClientId == e.ClientId
+                                             && s.QoS == e.TopicFilter.QualityOfServiceLevel.ToString());
+                    if (subs != null) return;
                     var subClient = new Subscribe
                     {
                         Topic = e.TopicFilter.Topic,
@@ -155,14 +165,14 @@ namespace MqttBroker
                     Console.WriteLine(exception);
                 }
             });
-            
+
             _server.ClientUnsubscribedTopicHandler = new MqttServerClientUnsubscribedTopicHandlerDelegate(args =>
             {
                 try
                 {
                     var clientId = args.ClientId;
                     var topicFilter = args.TopicFilter;
-                    
+
                     Console.WriteLine($"[{DateTime.Now}] Client '{clientId}' un-subscribed to {topicFilter}.");
                     using var context = new MqttBrokerDbContext();
                     try
@@ -198,32 +208,57 @@ namespace MqttBroker
             _server.ApplicationMessageReceivedHandler = new MqttApplicationMessageReceivedHandlerDelegate(e =>
             {
                 using var context = new MqttBrokerDbContext();
-                var payload = FunctionHelpers.GetPayload(e.ApplicationMessage.Payload);
-                var audit = new Audit
-                {
-                    ClientId = e.ClientId,
-                    Type = "Pub",
-                    VechicleId = e.ApplicationMessage.Topic.Replace("platooning/message/", ""),
-                    Payload = JsonConvert.SerializeObject(payload, Formatting.Indented)
-                };
-                context.Audit.AddAsync(audit);
-
                 try
                 {
+                    var payload = FunctionHelpers.GetPayload(e.ApplicationMessage.Payload);
+                    var audit = new Audit
+                    {
+                        ClientId = e.ClientId,
+                        Type = "Pub",
+                        Topic = e.ApplicationMessage.Topic,
+                        Payload = JsonConvert.SerializeObject(payload, Formatting.Indented)
+                    };
+                    context.Audit.AddAsync(audit);
+                    if (e.ClientId == null)
+                    {
+                        var log = new Log
+                        {
+                            Exception = new string("Broker publish message itself " +
+                                                   JsonConvert.SerializeObject(payload, Formatting.Indented) + " " +
+                                                   e.ClientId)
+                        };
+                        context.Log.AddAsync(log);
+                        context.SaveChanges();
+                        return;
+                    }
+
                     if (payload.Maneuver == Maneuver.CreatePlatoon)
                     {
                         var vehPla = e.ApplicationMessage.Topic.Replace("platooning/message/", "");
-                        var platoon = new Platoon()
+                        var platoonId = vehPla.Split("/").Last();
+                        var pla = context.Platoon.AsQueryable()
+                            .FirstOrDefault(f => f.Enable && f.PlatoonRealId == platoonId);
+                        if (pla == null)
                         {
-                            Enable = true,
-                            ClientId = e.ClientId,
-                            IsLead = true,
-                            VechicleId = vehPla.Split("/").First(),
-                            PlatoonRealId = vehPla.Split("/").Last()
-                        };
-                        context.Platoon.AddAsync(platoon);
+                            var platoon = new Platoon()
+                            {
+                                Enable = true,
+                                ClientId = e.ClientId,
+                                IsLead = true,
+                                VechicleId = vehPla.Split("/").First(),
+                                PlatoonRealId = vehPla.Split("/").Last()
+                            };
+                            context.Platoon.AddAsync(platoon);
+                            Console.WriteLine($"[{DateTime.Now}] Creating new Platoon Client Id " + e.ClientId +
+                                              " platooning Id" + platoon.PlatoonRealId + " payload "  + audit.Payload);
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[{DateTime.Now}] Platoon is already created Client Id " + e.ClientId +
+                                              " platooning Id" + platoonId + " payload "  + audit.Payload);
+                        }
                     }
-                    else if(payload.Maneuver == Maneuver.JoinRequest)
+                    else if (payload.Maneuver == Maneuver.JoinRequest)
                     {
                         var followingVec = e.ApplicationMessage.Topic.Replace("platooning/message/", "");
                         var platoonLead = context.Platoon.AsQueryable().FirstOrDefault(f => f.IsLead && f.Enable);
@@ -239,42 +274,60 @@ namespace MqttBroker
                                 PlatoonRealId = platoonLead.PlatoonRealId
                             };
                             context.Platoon.AddAsync(platoon);
+                            Console.WriteLine($"[{DateTime.Now}] Join Platoon Client Id " + e.ClientId +
+                                              " platooning Id" + platoon.PlatoonRealId + " payload "  + audit.Payload);
                             var message = new BitArray(61);
-                            message.Set(0, true);
-                            message.Set(1, true);
+                            message.Set(0, false);
+                            message.Set(1, false);
                             message.Set(2, true);
 
-                            _server.PublishAsync("platooning/leadvehicle/" + followingVec, Encoding.ASCII.GetString(FunctionHelpers.BitArrayToByteArray(message)));
+                            _server.PublishAsync("platooning/" + platoonLead.ClientId + "/" + followingVec + "/" + platoonLead.ClientId,
+                                Encoding.ASCII.GetString(FunctionHelpers.BitArrayToByteArray(message)));
+                        }
+                    }
+                    else if (payload.Maneuver == Maneuver.JoinAccepted)
+                    {
+                        Console.WriteLine($"[{DateTime.Now}] Join accepted Client Id " + e.ClientId + " payload " +
+                                          audit.Payload);
+                        var followvehicleId =
+                            e.ApplicationMessage.Topic.Replace("platooning/" + e.ClientId + "/", "");
+
+                        var platoonfollow = context.Platoon.AsQueryable()
+                            .FirstOrDefault(f => f.IsFollower && f.ClientId == followvehicleId);
+
+                        if (platoonfollow != null)
+                        {
+                            platoonfollow.Enable = true;
+                            context.Platoon.Update(platoonfollow);
                         }
                         else
                         {
-                            var messageFollowing = new BitArray(61);
-                            messageFollowing.Set(0, false);
-                            messageFollowing.Set(1, false);
-                            messageFollowing.Set(2, false);
-                            _server.PublishAsync("platooning/" + followingVec, Encoding.ASCII.GetString(FunctionHelpers.BitArrayToByteArray(messageFollowing)));
-
+                            var platoonlead = context.Platoon.AsQueryable()
+                                .FirstOrDefault(f => f.IsLead && f.Enable);
+                            if (platoonlead != null)
+                            {
+                                var platoon = new Platoon()
+                                {
+                                    Enable = true,
+                                    ClientId = e.ClientId,
+                                    IsLead = false,
+                                    IsFollower = true,
+                                    VechicleId = followvehicleId,
+                                    PlatoonRealId = platoonlead.PlatoonRealId
+                                };
+                                context.Platoon.AddAsync(platoon);
+                            }
                         }
-                        
-                    }else if (payload.Maneuver == Maneuver.JoinAccepted)
+                    }
+                    else
                     {
-                        var followingVec =  e.ApplicationMessage.Topic.Replace("platooning/", "");
-                        var platoonFollow = context.Platoon.AsQueryable()
-                            .FirstOrDefault(c => c.IsFollower == true && c.ClientId == followingVec);
-                        if (platoonFollow != null)
-                        {
-                            platoonFollow.Enable = true;
-                            context.Platoon.Update(platoonFollow);
-                        }
-                        
-                    }else
-                    {
-                            
                         var log = new Log
                         {
-                            Exception = new string("Unknown Maneuver " + JsonConvert.SerializeObject(payload, Formatting.Indented) + " " + e.ClientId)
+                            Exception = new string("Unknown Maneuver " +
+                                                   JsonConvert.SerializeObject(payload, Formatting.Indented) + " " +
+                                                   e.ClientId)
                         };
-                        context.Log.AddAsync(log); 
+                        context.Log.AddAsync(log);
                     }
                 }
                 catch (Exception exception)
@@ -285,13 +338,14 @@ namespace MqttBroker
                         Exception = exception.StackTrace
                     };
                     context.Log.AddAsync(log);
+                    context.SaveChanges();
                 }
+
                 context.SaveChanges();
-                
                 OnDataReceived(e.ApplicationMessage.Payload);
-                Console.WriteLine("Message Received");
-                Console.WriteLine(e.ClientId + " " + e.ApplicationMessage.Topic);
-                Console.WriteLine(e.ClientId + " " + e.ApplicationMessage.ConvertPayloadToString());
+                //Console.WriteLine("Message Received");
+                //Console.WriteLine(e.ClientId + " " + e.ApplicationMessage.Topic);
+                //Console.WriteLine(e.ClientId + " " + e.ApplicationMessage.ConvertPayloadToString());
             });
         }
 

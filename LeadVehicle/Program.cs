@@ -15,6 +15,7 @@ namespace LeadVehicle
     internal class Program
     {
         private const string leadvehicle = "leadvehicle";
+        private const string platoonId = "platoon1";
 
 
         public static IManagedMqttClient client =
@@ -22,7 +23,7 @@ namespace LeadVehicle
 
         private static void Main(string[] args)
         {
-            Console.WriteLine("Client console ");
+            
             _ = ConnectAsync();
             do {
                 while (!Console.KeyAvailable) {
@@ -37,10 +38,10 @@ namespace LeadVehicle
                         message.Set(1, true);
                         message.Set(2, true);
                         //string message = HelperFunctions.RandomString(5,true);
-                        _ = PublishAsync("platooning/message/" + leadvehicle,
-                            Encoding.ASCII.GetString(BitArrayToByteArray(message)));
+                        _ = PublishAsync("platooning/message/" + leadvehicle + "/" + platoonId,
+                            Encoding.ASCII.GetString(HelperFunctions.BitArrayToByteArray(message)));
                         Console.WriteLine("Client Publish as  " + "platooning/message/" + leadvehicle + "  payload => " +
-                                          Encoding.ASCII.GetString(BitArrayToByteArray(message)));
+                                          Encoding.ASCII.GetString(HelperFunctions.BitArrayToByteArray(message)));
                     }
                 }       
             } while (Console.ReadKey(true).Key != ConsoleKey.Escape);
@@ -55,23 +56,17 @@ namespace LeadVehicle
             return new byte[4];
         }
 
-        public static byte[] BitArrayToByteArray(BitArray bits)
-        {
-            var ret = new byte[(bits.Length - 1) / 8 + 1];
-            bits.CopyTo(ret, 0);
-            return ret;
-        }
+        
 
         private static async Task ConnectAsync()
         {
-            var clientId = "leadVehicle";
             const string mqttUri = "localhost";
             var mqttUser = "test";
             var mqttPassword = "test";
             var mqttPort = 1883;
-
+            Console.WriteLine($"MQTT Server:{mqttUri} Username:{mqttUser} ClientID:{leadvehicle}");
             var messageBuilder = new MqttClientOptionsBuilder()
-                .WithClientId(clientId)
+                .WithClientId(leadvehicle)
                 .WithCredentials(mqttUser, mqttPassword)
                 .WithTcpServer(mqttUri, mqttPort)
                 .WithKeepAlivePeriod(new TimeSpan(0, 0, 30))
@@ -96,8 +91,7 @@ namespace LeadVehicle
             client.UseDisconnectedHandler(e =>
             {
                 new MqttClientDisconnectedHandlerDelegate(e => MqttClient_Disconnected(e));
-                Console.WriteLine(" Client Was Connected " + e.ClientWasConnected);
-                Console.WriteLine("Disconnected from MQTT Brokers.");
+                Console.WriteLine("Disconnected from MQTT Brokers.Client Was Connected " + e.ClientWasConnected);
             });
             client.UseApplicationMessageReceivedHandler(e =>
             {
@@ -110,17 +104,17 @@ namespace LeadVehicle
                         var stringpayload = Encoding.UTF8.GetString(e.ApplicationMessage.Payload);
                         var bitArray = new BitArray(e.ApplicationMessage.Payload);
                         var payload = HelperFunctions.GetPayload(e.ApplicationMessage.Payload);
-                        Console.WriteLine($"Topic: {topic}. Message Received: {payload}");
+                        var py = HelperFunctions.ToBitString(new BitArray(e.ApplicationMessage.Payload), 0, 61);
+                        Console.WriteLine($"Topic: {topic}. Message Received: {py}");
                         var followingVehicle = topic.Replace("platooning/" + leadvehicle + "/", "");
                         if (payload.Maneuver == 1 && !string.IsNullOrWhiteSpace(followingVehicle))
                         {
                             payload.Maneuver = 2;
-                            var myBA = new BitArray(3);
-                            var message = ToBitString(myBA, 0, 3);
-                            myBA.Set(0, false);
-                            myBA.Set(0, true);
-                            myBA.Set(0, false);
-                            _ = PublishAsync("platooning/" + followingVehicle, message);
+                            var message = new BitArray(61);
+                            message.Set(0, false);
+                            message.Set(1, true);
+                            message.Set(2, false);
+                            _ = PublishAsync("platooning/" + followingVehicle+"/" + platoonId,  Encoding.ASCII.GetString(HelperFunctions.BitArrayToByteArray(message)));
                         }
                     }
                 }
@@ -131,18 +125,7 @@ namespace LeadVehicle
             });
         }
 
-        public static string ToBitString(BitArray bits, int indexStart, int indexFinish)
-        {
-            var sb = new StringBuilder();
-
-            for (var i = indexStart; i < indexFinish; i++)
-            {
-                var c = bits[i] ? '1' : '0';
-                sb.Append(c);
-            }
-
-            return sb.ToString();
-        }
+        
 
         private static async void MqttClient_Disconnected(MqttClientDisconnectedEventArgs e)
         {

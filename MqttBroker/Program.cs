@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections;
 using System.IO;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,7 +38,8 @@ namespace MqttBroker
 
         private static void MqttConsumer_DataReceived(object sender, byte[] e)
         {
-            Console.WriteLine("Data received ===>" + sender + " byte" + e);
+            var bitarry = new BitArray(e);
+            Console.WriteLine("Data received ===>" + FunctionHelpers.ToBitString(bitarry,0,bitarry.Length) );
         }
     }
 }

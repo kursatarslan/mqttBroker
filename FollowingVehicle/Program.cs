@@ -1,13 +1,15 @@
 ﻿using System;
+using System.Collections;
 using System.Diagnostics;
-using System.Threading;
+using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using MQTTnet;
 using MQTTnet.Client;
 using MQTTnet.Client.Disconnecting;
 using MQTTnet.Client.Options;
+using MQTTnet.Protocol;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace FollowingVehicle
 {
@@ -18,14 +20,14 @@ namespace FollowingVehicle
         private static string server;
         private static string username;
         private static string apiKey;
-        private static string clientID;
+        private static string clientId;
 
         private static void Main(string[] args)
         {
             var factory = new MqttFactory();
             mqttClient = factory.CreateMqttClient();
 
-            var clientId = Guid.NewGuid().ToString();
+            clientId = "followingVehicle";
             const string mqttUri = "localhost";
             var mqttUser = "test";
             var mqttPassword = "test";
@@ -34,9 +36,8 @@ namespace FollowingVehicle
             server = mqttUri;
             username = mqttUser;
             apiKey = mqttPassword;
-            clientID = clientId;
 
-            Console.WriteLine($"MQTT Server:{server} Username:{username} ClientID:{clientID}");
+            Console.WriteLine($"MQTT Server:{server} Username:{username} ClientID:{clientId}");
 
             // wolkabout formatted client state update topic
             var topicD2C = "platooning/message/followingvehicle";
@@ -44,44 +45,79 @@ namespace FollowingVehicle
             mqttOptions = new MqttClientOptionsBuilder()
                 .WithTcpServer(server)
                 .WithCredentials(username, apiKey)
-                .WithClientId(clientID)
+                .WithClientId(clientId)
                 //.WithTls()
                 .Build();
-
-            mqttClient.UseDisconnectedHandler(
-                new MqttClientDisconnectedHandlerDelegate(e => MqttClient_Disconnected(e)));
             mqttClient.ConnectAsync(mqttOptions).Wait();
-
-            while (true)
+            mqttClient.UseConnectedHandler(e => { Console.WriteLine("Connected successfully with MQTT Brokers."); });
+            mqttClient.UseDisconnectedHandler(e =>
             {
-                var payloadJObject = new JObject();
+                new MqttClientDisconnectedHandlerDelegate(e => MqttClient_Disconnected(e));
+                Console.WriteLine("Disconnected from MQTT Brokers.Client Was Connected " + e.ClientWasConnected);
+            });
+            mqttClient.UseApplicationMessageReceivedHandler(e =>
+            {
+                try
+                {
+                    var topic = e.ApplicationMessage.Topic;
 
-                var temperature = 22.0 + DateTime.UtcNow.Millisecond / 1000.0;
-                var humidity = 50 + DateTime.UtcNow.Millisecond / 100.0;
+                    if (!string.IsNullOrWhiteSpace(topic))
+                    {
+                        var payload = HelperFunctions.GetPayload(e.ApplicationMessage.Payload);
+                        Console.WriteLine($"Topic: {topic}. Message Received: {JsonConvert.SerializeObject(payload, Formatting.Indented)}");
+                        var platoonId = topic.Replace("platooning/" + clientId + "/", "").Split("/").Last();
+                        if (payload.Maneuver == 2 )
+                        { 
+                            
+                            _ = SubscribeAsync("platooning/broadcast/" + platoonId + "/#");
+                            Console.WriteLine("Client SubscribeAsync as  " + "platooning/broadcast/" + platoonId + "/#");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ex.Message, ex);
+                }
+            });
+            
+            do {
+                while (!Console.KeyAvailable) {
+                    if (Console.ReadKey(true).Key == ConsoleKey.S)
+                    {
+                        _ = SubscribeAsync("platooning/" + clientId + "/#");
+                        Console.WriteLine("Client SubscribeAsync as  " + "platooning/" + clientId + "/#");
+                    }else if (Console.ReadKey(true).Key == ConsoleKey.P)
+                    {
+                        var message = new BitArray(61);
+                        message.Set(0, false);
+                        message.Set(1, false);
+                        message.Set(2, true);
+                        //string message = HelperFunctions.RandomString(5,true);
+                        _ = PublishAsync("platooning/message/" + clientId ,
+                            Encoding.ASCII.GetString(HelperFunctions.BitArrayToByteArray(message)));
+                        Console.WriteLine("Client Publish as  " + "platooning/message/" + clientId + "  payload => " +
+                                          Encoding.ASCII.GetString(HelperFunctions.BitArrayToByteArray(message)));
+                    }
+                }       
+            } while (Console.ReadKey(true).Key != ConsoleKey.Escape);
+        }
+        
+        public static async Task PublishAsync(string topic, string payload, bool retainFlag = true, int qos = 1)
+        {
+            await mqttClient.PublishAsync(new MqttApplicationMessageBuilder()
+                .WithTopic(topic)
+                .WithPayload(payload)
+                .WithQualityOfServiceLevel((MqttQualityOfServiceLevel) qos)
+                .WithRetainFlag(retainFlag)
+                .Build());
+        }
 
-                payloadJObject.Add("Temperature", temperature);
-                payloadJObject.Add("Humidity", humidity);
-
-                var payload = JsonConvert.SerializeObject(payloadJObject);
-                Console.WriteLine($"Topic:{topicD2C} Payload:{payload}");
-
-                var message = new MqttApplicationMessageBuilder()
-                    .WithTopic(topicD2C)
-                    .WithPayload(payload)
-                    .WithAtLeastOnceQoS()
-                    .Build();
-
-                // the code that you want to measure comes here
-
-                Console.WriteLine("PublishAsync start");
-                var watch = Stopwatch.StartNew();
-                mqttClient.PublishAsync(message).Wait();
-                watch.Stop();
-                Console.WriteLine("Time taken: {0}ms", watch.Elapsed.TotalMilliseconds);
-
-
-                Thread.Sleep(110);
-            }
+        public static async Task SubscribeAsync(string topic, int qos = 1)
+        {
+            await mqttClient.SubscribeAsync(new TopicFilterBuilder()
+                .WithTopic(topic)
+                .WithQualityOfServiceLevel((MqttQualityOfServiceLevel) qos)
+                .Build());
         }
 
         private static async void MqttClient_Disconnected(MqttClientDisconnectedEventArgs e)
