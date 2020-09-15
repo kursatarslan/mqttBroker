@@ -114,7 +114,7 @@ namespace LeadVehicle
                             message.Set(0, false);
                             message.Set(1, true);
                             message.Set(2, false);
-                            _ = PublishAsync("platooning/" + followingVehicle+"/" + platoonId,  Encoding.ASCII.GetString(HelperFunctions.BitArrayToByteArray(message)));
+                            _ = PublishAsync("platooning/" + followingVehicle+"/" + leadvehicle+"/"+ platoonId,  Encoding.ASCII.GetString(HelperFunctions.BitArrayToByteArray(message)));
                         }
                     }
                 }

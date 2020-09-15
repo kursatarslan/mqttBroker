@@ -52,7 +52,7 @@ namespace FollowingVehicle
             mqttClient.UseConnectedHandler(e => { Console.WriteLine("Connected successfully with MQTT Brokers."); });
             mqttClient.UseDisconnectedHandler(e =>
             {
-                new MqttClientDisconnectedHandlerDelegate(e => MqttClient_Disconnected(e));
+                new MqttClientDisconnectedHandlerDelegate(MqttClient_Disconnected);
                 Console.WriteLine("Disconnected from MQTT Brokers.Client Was Connected " + e.ClientWasConnected);
             });
             mqttClient.UseApplicationMessageReceivedHandler(e =>
@@ -123,7 +123,7 @@ namespace FollowingVehicle
         private static async void MqttClient_Disconnected(MqttClientDisconnectedEventArgs e)
         {
             Debug.WriteLine("Disconnected");
-            await Task.Delay(TimeSpan.FromSeconds(5));
+            await Task.Delay(TimeSpan.FromSeconds(1));
 
             try
             {

@@ -13,12 +13,12 @@ using Newtonsoft.Json;
 
 namespace MqttBroker
 {
-    public class MqttConsumer
+    public class MqttConsumer 
     {
-        private readonly IMqttServerOptions _optionsBuilder;
-
-
-        private readonly IMqttServer _server;
+        public IMqttServerOptions OptionsBuilder { get; set; }
+        public IMqttServer Server { get; set; }
+        private int _dataLenght = 61;
+        public event EventHandler<byte[]> DataReceived;
 
         public MqttConsumer()
         {
@@ -50,28 +50,67 @@ namespace MqttBroker
             {
                 ConnectionValidator = new MqttServerConnectionValidatorDelegate(p =>
                 {
+                    
                     //if (p.ClientId != "SpecialClient") return;
                     if (p.Username != "test" || p.Password != "test")
+                    {
                         p.ReasonCode = MqttConnectReasonCode.BadUserNameOrPassword;
-                })
-                /*
+                    }
+
+                    if (string.IsNullOrEmpty(p.ClientId))
+                        return;
+                }),
+                
                 ApplicationMessageInterceptor = new MqttServerApplicationMessageInterceptorDelegate(context =>
                 {
+                    /*
                     if (!MqttTopicFilterComparer.IsMatch(context.ApplicationMessage.Topic, "platooning"))
                     {
                         // Replace the payload with the timestamp. But also extending a JSON 
                         // based payload with the timestamp is a suitable use case.
                         context.ApplicationMessage.Payload = Encoding.UTF8.GetBytes(DateTime.Now.ToString("O"));
-                    }
+                    }*/
  
-                    if (context.ApplicationMessage.Topic == "not_allowed_topic")
+                    if (!context.ApplicationMessage.Topic.StartsWith("platooning/"))
                     {
                         context.AcceptPublish = false;
                         context.CloseConnection = true;
                     }
+
                 }),
+                    
                 SubscriptionInterceptor = new MqttServerSubscriptionInterceptorDelegate(context =>
                 {
+                    if (context.TopicFilter.Topic.StartsWith("platooning/broadcast/"))
+                    {
+                        var plotooningId = context.TopicFilter.Topic.Replace("platooning/broadcast/", "");
+                        using var dbcontext = new MqttBrokerDbContext();
+                        try
+                        {
+                            var followvehicleEnable = dbcontext.Platoon.FirstOrDefault(f => f.Enable
+                                && f.IsFollower
+                                && f.ClientId == context.ClientId && f.PlatoonRealId == plotooningId);
+
+                            if (followvehicleEnable == null)
+                            {
+                                context.AcceptSubscription = false;
+                                context.CloseConnection = true;
+                            }
+                        }
+                        catch (Exception exception)
+                        {
+                            var log = new Log
+                            {
+                                Exception = exception.StackTrace
+                            };
+                            dbcontext.Log.AddAsync(log);
+                            dbcontext.SaveChanges();
+                            Console.WriteLine(exception);
+                        }
+                        //context.AcceptSubscription = false;
+                        //context.CloseConnection = true;
+                    }
+                    
                     if (context.TopicFilter.Topic.StartsWith("admin/foo/bar") && context.ClientId != "theAdmin")
                     {
                         //context.AcceptSubscription = false;
@@ -82,10 +121,10 @@ namespace MqttBroker
                         //context.AcceptSubscription = false;
                         //context.CloseConnection = true;
                     }
-                })*/
+                })
             };
 
-            _optionsBuilder = new MqttServerOptionsBuilder()
+            OptionsBuilder = new MqttServerOptionsBuilder()
                 .WithClientCertificate()
                 .WithConnectionBacklog(100)
                 .WithDefaultEndpointPort(1883)
@@ -96,16 +135,16 @@ namespace MqttBroker
                 // .WithEncryptionCertificate(certifOption.TlsEndpointOptions.Certificate)
                 //.WithEncryptedEndpoint()
                 .Build();
-            _server = new MqttFactory().CreateMqttServer();
+            Server = new MqttFactory().CreateMqttServer();
         }
 
-        public event EventHandler<byte[]> DataReceived;
+        
 
         public async Task StartConsume()
         {
             try
             {
-                await _server.StartAsync(_optionsBuilder);
+                await Server.StartAsync(OptionsBuilder);
             }
             catch (Exception ex)
             {
@@ -113,15 +152,15 @@ namespace MqttBroker
                 Console.WriteLine(ex.Message);
                 throw;
             }
-            _server.StartedHandler = new MqttServerStartedHandlerDelegate(e =>
+            Server.StartedHandler = new MqttServerStartedHandlerDelegate(e =>
             {
                 Console.WriteLine("Mqtt Broker start");
             });
-            _server.StoppedHandler = new MqttServerStoppedHandlerDelegate(e =>
+            Server.StoppedHandler = new MqttServerStoppedHandlerDelegate(e =>
             {
                 Console.WriteLine("Mqtt Broker stop");
             });
-            _server.ClientSubscribedTopicHandler = new MqttServerClientSubscribedHandlerDelegate(e =>
+            Server.ClientSubscribedTopicHandler = new MqttServerClientSubscribedHandlerDelegate(e =>
             {
                 var vehicleId = e.TopicFilter.Topic
                     .Replace("platooning/", "").Replace("/#", "");
@@ -144,6 +183,8 @@ namespace MqttBroker
                                              && s.ClientId == e.ClientId
                                              && s.QoS == e.TopicFilter.QualityOfServiceLevel.ToString());
                     if (subs != null) return;
+                    
+                    
                     var subClient = new Subscribe
                     {
                         Topic = e.TopicFilter.Topic,
@@ -166,7 +207,7 @@ namespace MqttBroker
                 }
             });
 
-            _server.ClientUnsubscribedTopicHandler = new MqttServerClientUnsubscribedTopicHandlerDelegate(args =>
+            Server.ClientUnsubscribedTopicHandler = new MqttServerClientUnsubscribedTopicHandlerDelegate(args =>
             {
                 try
                 {
@@ -201,11 +242,11 @@ namespace MqttBroker
                 }
             });
 
-            _server.ClientConnectedHandler = new MqttServerClientConnectedHandlerDelegate(e =>
+            Server.ClientConnectedHandler = new MqttServerClientConnectedHandlerDelegate(e =>
             {
                 Console.WriteLine("Client Connected " + e.ClientId);
             });
-            _server.ApplicationMessageReceivedHandler = new MqttApplicationMessageReceivedHandlerDelegate(e =>
+            Server.ApplicationMessageReceivedHandler = new MqttApplicationMessageReceivedHandlerDelegate(e =>
             {
                 using var context = new MqttBrokerDbContext();
                 try
@@ -261,6 +302,8 @@ namespace MqttBroker
                     else if (payload.Maneuver == Maneuver.JoinRequest)
                     {
                         var followingVec = e.ApplicationMessage.Topic.Replace("platooning/message/", "");
+                        var isFollowing =context.Platoon.FirstOrDefault(f => f.IsFollower && f.VechicleId == followingVec && f.Enable);
+                        if (isFollowing != null) return;
                         var platoonLead = context.Platoon.AsQueryable().FirstOrDefault(f => f.IsLead && f.Enable);
                         if (platoonLead != null)
                         {
@@ -276,12 +319,12 @@ namespace MqttBroker
                             context.Platoon.AddAsync(platoon);
                             Console.WriteLine($"[{DateTime.Now}] Join Platoon Client Id " + e.ClientId +
                                               " platooning Id" + platoon.PlatoonRealId + " payload "  + audit.Payload);
-                            var message = new BitArray(61);
+                            var message = new BitArray(_dataLenght);
                             message.Set(0, false);
                             message.Set(1, false);
                             message.Set(2, true);
 
-                            _server.PublishAsync("platooning/" + platoonLead.ClientId + "/" + followingVec + "/" + platoonLead.ClientId,
+                            Server.PublishAsync("platooning/" + platoonLead.ClientId + "/" + followingVec,
                                 Encoding.ASCII.GetString(FunctionHelpers.BitArrayToByteArray(message)));
                         }
                     }
@@ -289,21 +332,23 @@ namespace MqttBroker
                     {
                         Console.WriteLine($"[{DateTime.Now}] Join accepted Client Id " + e.ClientId + " payload " +
                                           audit.Payload);
-                        var followvehicleId =
-                            e.ApplicationMessage.Topic.Replace("platooning/" + e.ClientId + "/", "");
-
+                        var splitTopic = e.ApplicationMessage.Topic.Split("/");
+                        var followvehicleId = splitTopic[1];
+                        var leadVehicle = splitTopic[2];
+                        var plattonId = splitTopic[3];
                         var platoonfollow = context.Platoon.AsQueryable()
                             .FirstOrDefault(f => f.IsFollower && f.ClientId == followvehicleId);
 
                         if (platoonfollow != null)
                         {
                             platoonfollow.Enable = true;
+                            platoonfollow.PlatoonRealId = plattonId;
                             context.Platoon.Update(platoonfollow);
                         }
                         else
                         {
                             var platoonlead = context.Platoon.AsQueryable()
-                                .FirstOrDefault(f => f.IsLead && f.Enable);
+                                .FirstOrDefault(f => f.IsLead && f.Enable && f.ClientId == leadVehicle);
                             if (platoonlead != null)
                             {
                                 var platoon = new Platoon()
@@ -350,17 +395,17 @@ namespace MqttBroker
         }
 
 
-        private void StopConsume()
+        public void StopConsume()
         {
-            _server.StopAsync();
-            _server.ClientDisconnectedHandler = new MqttServerClientDisconnectedHandlerDelegate(e =>
+            Server.StopAsync();
+            Server.ClientDisconnectedHandler = new MqttServerClientDisconnectedHandlerDelegate(e =>
             {
                 Console.WriteLine("Client Disconnect" + e.ClientId);
                 Console.WriteLine("Client DisconnectType" + e.DisconnectType);
             });
         }
 
-        protected virtual void OnDataReceived(byte[] e)
+        public void OnDataReceived(byte[] e)
         {
             DataReceived?.Invoke(this, e);
         }
